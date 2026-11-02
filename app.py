@@ -30,10 +30,10 @@ analysis_mode = st.sidebar.selectbox(
     ["Environmental Stress vs. Disease Incidence", "Multi-Pathogen & Climate Comparison", "Synthetic Simulation Mode"]
 )
 
-# Date Range Simulation Filter
-date_range = st.sidebar.date_range_input(
+# Date Range Simulation Filter (Corrected to use st.date_input)
+date_range = st.sidebar.date_input(
     "Select Date Range",
-    value=(pd.to_datetime("2021-01-01"), pd.to_datetime("2023-12-31"))
+    value=(pd.to_datetime("2021-01-01").date(), pd.to_datetime("2023-12-31").date())
 )
 
 # Synthetic Data Generation Engine (Fallback & Prototyping)
