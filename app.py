@@ -1,8 +1,32 @@
+# ================================================================
+# Eco-Health-Viz
+# Author: Mohammad Shaito, Ph.D.
+#
+# WHAT THIS APP DOES
+# Eco-Health-Viz lets you explore simulated air quality, temperature,
+# household income, and respiratory disease rates. Each state label
+# identifies a fictional scenario with 50 counties and 36 monthly records
+# per county, from January 2021 through December 2023. The data illustrate
+# how to compare patterns and summarize rates using a synthetic dataset.
+#
+# QUICK START
+# 1. Run the app with: streamlit run app.py
+# 2. Use the sidebar to choose a scenario, date range, and county subset.
+# 3. Choose an analysis mode to compare variables or view monthly trends.
+# 4. Choose Data inspection and export to download the filtered CSV and
+#    a JSON record of the settings, software versions, and checksums.
+#
+# HOW THE CODE IS ORGANIZED
+# The functions below generate, filter, summarize, plot, and export data.
+# main() connects them to Streamlit's widgets and displays the result.
+# ================================================================
+
 """Eco-Health-Viz 3.0: transparent synthetic scenarios, not observed surveillance.
 
 The pure functions above main() are independently importable and testable.
 Run with: streamlit run app.py
 """
+# --- 1. Imports ---
 from pathlib import Path
 import hashlib
 import json
@@ -16,6 +40,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
+# --- 2. Scenario settings and interface labels ---
 # This version identifies the simulation rules in the interface and exports.
 GENERATOR_VERSION = "3.0.0"
 # All values below are arbitrary scenario settings, not state estimates.
@@ -38,6 +63,7 @@ LABELS = {"PM25": "Simulated PM2.5 (µg/m³)",
           "Flu_Per_Capita": "Simulated influenza cases per 100,000 per month"}
 
 
+# --- 3. Synthetic county and month records ---
 def generate_synthetic_eco_health_data(state_name):
     """Create fictional county records using seasonality and Poisson counts.
 
@@ -47,27 +73,33 @@ def generate_synthetic_eco_health_data(state_name):
     """
     # Separate streams keep case sampling independent of environmental draws.
     cfg = SCENARIOS[state_name]
+    # Stream 0 supplies county attributes and environmental noise.
     env_rng = np.random.default_rng(np.random.SeedSequence([cfg["seed"], 0]))
+    # Stream 1 samples disease counts. The same scenario seed reproduces both streams.
     count_rng = np.random.default_rng(np.random.SeedSequence([cfg["seed"], 1]))
     # Use one row per county per month. ME selects the last day of each month.
     dates = pd.date_range("2021-01-01", "2023-12-31", freq="ME")
     rows = []
     for i in range(50):
         # Draw county attributes once so they stay fixed over time.
+        # The upper bound of integers() is exclusive, so 500001 allows 500000.
         population = int(env_rng.integers(20000, 500001))
         income = round(float(env_rng.uniform(35000, 100000)), 2)
         risk = float(env_rng.uniform(0.8, 1.2))
         pm_base = float(cfg["pm"] * env_rng.uniform(0.8, 1.2))
         for t, date in enumerate(dates):
             # Share a February-peaking annual cycle across the synthetic series.
+            # t starts at 0 in January. Subtracting 1 puts the cosine peak in February.
             season = float(np.cos(2 * np.pi * (t - 1) / 12))
             # Add random variation to each environmental value for this month.
             pm_error = float(env_rng.normal(0, 0.5))
             temp_error = float(env_rng.normal(0, 0.12))
+            # Keep simulated PM2.5 at or above 0.1 micrograms per cubic meter.
             pm = max(0.1, pm_base * (1 + 0.15 * season) + pm_error)
             temp = cfg["temp"] + 0.2 * season + temp_error
             # Disease rates use county and seasonal factors. PM2.5 and temperature are comparison variables.
             covid_rate = cfg["covid"] * risk * (1 + 0.25 * season)
+            # The larger seasonal multiplier gives influenza a stronger annual swing.
             flu_rate = cfg["flu"] * risk * (1 + 0.65 * season)
             # Convert rates per 100,000 to expected counts before sampling.
             covid_mu = population * covid_rate / 100000
@@ -81,6 +113,7 @@ def generate_synthetic_eco_health_data(state_name):
                          "Population": population, "Median_Household_Income": income,
                          "Temperature_Anomaly": temp, "PM25": pm,
                          "COVID_Cases": covid, "Flu_Cases": flu,
+                         # Convert sampled case counts back to rates per 100,000 people.
                          "COVID_Per_Capita": covid / population * 100000,
                          "Flu_Per_Capita": flu / population * 100000,
                          "Expected_COVID_Rate": float(covid_rate), "Expected_Flu_Rate": float(flu_rate),
@@ -92,6 +125,7 @@ def generate_synthetic_eco_health_data(state_name):
     return pd.DataFrame(rows).sort_values(["Date", "County"]).reset_index(drop=True)
 
 
+# --- 4. Date and county filters ---
 def filter_records(df, date_range, counties=None):
     """Apply inclusive dates and an optional county subset; reject partial ranges."""
     # The date widget can temporarily return one endpoint while the user picks the other.
@@ -103,11 +137,13 @@ def filter_records(df, date_range, counties=None):
     # A Boolean mask marks rows to keep. The county condition narrows that same mask.
     mask = df["Date"].between(start, end)
     if counties is not None:
+        # &= keeps only rows that satisfy both the date and county filters.
         mask &= df["County"].isin(counties)
     # Return a separate table so later operations can safely work on the filtered rows.
     return df.loc[mask].copy().reset_index(drop=True)
 
 
+# --- 5. Monthly summaries ---
 def aggregate_monthly(df, method="Pooled population rate"):
     """Summarize the selected counties, using exact counts for pooled rates."""
     if method not in ["Pooled population rate", "Mean county rate"]:
@@ -117,6 +153,7 @@ def aggregate_monthly(df, method="Pooled population rate"):
     result = grouped[["COVID_Cases", "Flu_Cases", "Population"]].sum()
     # Pooled rates weight counties by population. Mean county rates give them equal weight.
     for metric, count in [("COVID_Per_Capita", "COVID_Cases"), ("Flu_Per_Capita", "Flu_Cases")]:
+        # Select the formula once per disease. Both outputs use cases per 100,000.
         result[metric] = (result[count] / result["Population"] * 100000
                           if method == "Pooled population rate" else grouped[metric].mean())
     # The PM2.5 line gives each selected county equal weight in each month.
@@ -124,6 +161,7 @@ def aggregate_monthly(df, method="Pooled population rate"):
     return result.reset_index()
 
 
+# --- 6. Interactive charts ---
 def make_scatter(df, x, y):
     """Use uniform markers; county color is optional to avoid 50-category legends."""
     if x not in X_VARIABLES or y not in Y_VARIABLES:
@@ -156,6 +194,7 @@ def make_trends(summary, method):
     return fig
 
 
+# --- 7. CSV and JSON exports ---
 def export_payload(df, state_name, date_range, selected_counties):
     """Serialize filtered values plus an auditable provenance manifest."""
     # Hash the exact download bytes and the running source for provenance.
@@ -180,7 +219,7 @@ def export_payload(df, state_name, date_range, selected_counties):
     return csv_bytes, json.dumps(metadata, indent=2).encode("utf-8")
 
 
-# INTERFACE
+# --- 8. Streamlit interface and data cache ---
 # Streamlit reruns the script after widget changes. Cache the full dataset by scenario.
 @st.cache_data
 def load_scenario(state_name):
@@ -221,6 +260,7 @@ or [mshaito78@gmail.com](mailto:mshaito78@gmail.com).""")
         user_agent,
         re.IGNORECASE,
     )
+    # Render the hint when the browser reports a mobile device.
     if mobile_device:
         st.info("📱 Tap the top-left sidebar icon to open the controls. Close the sidebar for more chart space.")
 
